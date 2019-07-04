@@ -2,14 +2,15 @@ require 'date'
 
 module OpenSSL
   def self.ensure_account_key
-    unless File.exist? '/var/lib/https-portal/account.key'
-      system 'openssl genrsa 4096 > /var/lib/https-portal/account.key'
+    path = '/var/lib/https-portal/account.key'
+    unless File.exist?(path) && system("openssl rsa --in #{path} --noout --check")
+      system "openssl genrsa 4096 > #{path}"
     end
   end
 
   def self.ensure_domain_key(domain)
-    unless File.exist? domain.key_path
-      system "openssl genrsa 2048 > #{domain.key_path}"
+    unless File.exist?(domain.key_path) && system("openssl rsa --in #{domain.key_path} --noout --check")
+      system "openssl genrsa #{ENV['NUMBITS'] =~ /^[0-9]+$/ ? ENV['NUMBITS'] : 2048} > #{domain.key_path}"
     end
   end
 
@@ -21,8 +22,8 @@ module OpenSSL
     return true if NAConfig.force_renew?
 
     skip_conditions = File.exist?(domain.key_path) &&
-                      File.exist?(domain.chained_cert_path) &&
-                      expires_in_days(domain.chained_cert_path) > 30
+                      File.exist?(domain.signed_cert_path) &&
+                      expires_in_days(domain.signed_cert_path) > 30
 
     !skip_conditions
   end
@@ -50,8 +51,6 @@ module OpenSSL
     EOC
 
     system command
-
-    system "cp #{domain.signed_cert_path} #{domain.chained_cert_path}"
   end
 
   private

@@ -7,6 +7,7 @@ class Domain
 
   def initialize(descriptor)
     @descriptor = descriptor
+    create_dir
   end
 
   def csr_path
@@ -17,16 +18,21 @@ class Domain
     File.join(dir, 'signed.crt')
   end
 
+  # For backward compatibility
+  def chained_cert_path
+    File.join(dir, 'chained.crt')
+  end
+
   def ongoing_cert_path
     File.join(dir, 'signed.ongoing.crt')
   end
 
-  def chained_cert_path
-    File.join(dir, 'chained.pem')
-  end
-
   def key_path
     File.join(dir, 'domain.key')
+  end
+
+  def htaccess_path
+    File.join(dir, 'htaccess')
   end
 
   def dir
@@ -38,7 +44,7 @@ class Domain
   end
 
   def ensure_welcome_page
-    return if upstream || redirect_target_domain
+    return if upstream || redirect_target_url
 
     index_html = File.join(www_root, 'index.html')
 
@@ -54,62 +60,89 @@ class Domain
   def ca
     case stage
     when 'production'
-      'https://acme-v01.api.letsencrypt.org'
+      'https://acme-v02.api.letsencrypt.org/directory'
     when 'local'
       nil
     when 'staging'
-      'https://acme-staging.api.letsencrypt.org'
+      'https://acme-staging-v02.api.letsencrypt.org/directory'
     end
   end
 
   def name
-    if @name
-      @name
-    else
-      @name = descriptor.split('->').first.split(' ').first.strip
-    end
+    parsed_descriptor[:domain]
   end
 
   def upstream
-    if @upstream
-      @upstream
-    else
-      match = descriptor.match(/->\s*([^#\s][\S]*)/)
-      @upstream = match[1] if match
-    end
+    parsed_descriptor[:upstream] if parsed_descriptor[:mode] == '->'
   end
 
-  def redirect_target_domain
-    if @redirect_target_domain
-      @redirect_target_domain
+  def redirect_target_url
+    return unless parsed_descriptor[:mode] == '=>'
+
+    url = parsed_descriptor[:upstream]
+
+    if url.start_with? "http"
+      return url
     else
-      match = descriptor.match(/=>\s*([^#\s][\S]*)/)
-      @redirect_target_domain = match[1] if match
+      return "https://" + url
     end
   end
 
   def stage
-    if @stage
-      @stage
+    val = parsed_descriptor[:stage].to_s.empty? ? NAConfig.stage : parsed_descriptor[:stage]
+    
+    if STAGES.include?(val)
+      val
     else
-      match = descriptor.match(/\s#(\S+)$/)
+      STDERR.puts "Error: Invalid stage #{val}"
+      nil
+    end
+  end
 
-      @stage = if match
-                 match[1]
-               else
-                 NAConfig.stage
-               end
+  def basic_auth_username
+    parsed_descriptor[:user]
+  end
 
-      if STAGES.include?(@stage)
-        @stage
+  def basic_auth_password
+    parsed_descriptor[:pass]
+  end
+
+  def basic_auth_enabled?
+    basic_auth_username && basic_auth_password
+  end
+
+  def access_restriction
+    if defined? @access_restriction
+      @access_restriction
+    else
+      if parsed_descriptor[:ips].nil?
+        @access_restriction = nil
       else
-        puts "Error: Invalid stage #{@stage}"
-        nil
+        @access_restriction = parsed_descriptor[:ips].split(' ')
       end
     end
   end
 
   private
+
+  def create_dir
+    FileUtils.mkdir_p dir
+  end
+
+  def parsed_descriptor
+    if defined? @parsed_descriptor
+      @parsed_descriptor
+    else
+      regex = /^(?:\[(?<ips>[0-9.:\/, ]*)\]\s*)?(?:(?<user>[^:@\[\]]+)(?::(?<pass>[^@]*))?@)?(?<domain>[a-z0-9._\-]+?)(?:(?:\s*(?<mode>[-=]>)\s*(?<upstream>[a-z0-9.:\/_\-]+))?\s*(:?#(?<stage>[a-z]*))?)?$/i
+      match = descriptor.strip.match(regex)
+      if match.nil?
+        STDERR.puts "Error: Invalid descriptor #{descriptor}"
+        @parsed_descriptor = nil
+      else
+        @parsed_descriptor = match
+      end
+    end
+  end
 
   def compiled_welcome_page
     binding_hash = {
